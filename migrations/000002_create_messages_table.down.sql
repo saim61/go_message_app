@@ -1,0 +1,2 @@
+DROP TABLE messages; 
+DROP EXTENSION IF EXISTS "uuid-ossp";
