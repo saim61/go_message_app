@@ -2,16 +2,17 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 
 	"github.com/saim61/go_message_app/internal/auth"
 	"github.com/saim61/go_message_app/internal/storage/postgres"
+	"github.com/saim61/go_message_app/utils"
 )
 
 type loginRequest struct {
@@ -23,16 +24,13 @@ type loginResponse struct {
 	Token string `json:"token"`
 }
 
-var (
-	db    *sqlx.DB
-	users *postgres.UserRepo
-)
+var users *postgres.UserRepo
 
 func main() {
-	var err error
-	// TODO: get username and password from env variables
-	dsn := "postgres://postgres:postgres@localhost:5432/go_message_app?sslmode=disable"
-	db, err = sqlx.Open("postgres", dsn)
+	_ = godotenv.Load() // loads .env if present (noop in Docker)
+
+	dsn := utils.BuildDSN()
+	db, err := sqlx.Open("postgres", dsn)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -44,22 +42,18 @@ func main() {
 	http.HandleFunc("/register", registerHandler)
 	http.HandleFunc("/login", loginHandler)
 
-	addr := ":8080"
-	log.Printf("auth service listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, nil))
+	port := utils.GetEnv("AUTH_PORT", "8080")
+	log.Printf("[auth] listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	hash, err := auth.HashPassword(req.Password)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	hash, _ := auth.HashPassword(req.Password)
 	if err := users.Create(r.Context(), &postgres.User{
 		Username: req.Username,
 		Password: hash,
@@ -72,23 +66,16 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
 	u, err := users.GetByUsername(r.Context(), req.Username)
 	if err != nil || auth.CheckPassword(u.Password, req.Password) != nil {
-		fmt.Println("*****************")
-		fmt.Println("the error soniya:", err.Error())
-		fmt.Println("*****************")
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
-	token, err := auth.NewToken(u.Username, 15*time.Minute)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	token, _ := auth.NewToken(u.Username, 15*time.Minute)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{Token: token})
 }

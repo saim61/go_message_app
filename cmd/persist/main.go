@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/saim61/go_message_app/utils"
 
 	kafkabr "github.com/saim61/go_message_app/internal/broker/kafka"
 	"github.com/saim61/go_message_app/internal/storage/postgres"
@@ -22,8 +25,11 @@ type wireMessage struct {
 }
 
 func main() {
-	// DB
-	db, err := sqlx.Open("postgres", "postgres://postgres:postgres@localhost:5432/go_message_app?sslmode=disable")
+	_ = godotenv.Load()
+
+	// ---------- DB ----------
+	dsn := utils.BuildDSN()
+	db, err := sqlx.Open("postgres", dsn)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -31,8 +37,10 @@ func main() {
 		log.Fatal(err)
 	}
 	msgRepo := postgres.NewMessageRepo(db)
-	// Kafka consumer
-	consumer, err := kafkabr.NewConsumer([]string{"localhost:9092"})
+
+	// ---------- Kafka ----------
+	brokers := strings.Split(utils.GetEnv("KAFKA_BROKERS", "localhost:9092"), ",")
+	consumer, err := kafkabr.NewConsumer(brokers)
 	if err != nil {
 		log.Fatalf("kafka consumer: %v", err)
 	}
@@ -52,7 +60,7 @@ func main() {
 		})
 	}
 
-	if err := consumer.Consume("chat-in", handler); err != nil {
+	if err = consumer.Consume("chat-in", handler); err != nil {
 		log.Fatal(err)
 	}
 	select {}

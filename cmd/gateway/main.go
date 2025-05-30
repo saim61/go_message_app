@@ -4,26 +4,22 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
+	"github.com/saim61/go_message_app/utils"
 
 	"github.com/saim61/go_message_app/internal/auth"
-	broker "github.com/saim61/go_message_app/internal/broker"
-	kafka "github.com/saim61/go_message_app/internal/broker/kafka"
-)
-
-var (
-	producer broker.Producer
-	upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	kafkabr "github.com/saim61/go_message_app/internal/broker/kafka"
 )
 
 type inbound struct {
 	Room string `json:"room"`
 	Body string `json:"body"`
 }
-
 type wireMessage struct {
 	ID        string    `json:"id"`
 	Room      string    `json:"room"`
@@ -32,22 +28,34 @@ type wireMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+var (
+	producer *kafkabr.SaramaProducer
+	upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+)
+
 func main() {
-	var err error
-	producer, err = kafka.NewProducer([]string{"localhost:9092"})
+	_ = godotenv.Load()
+
+	brokers := strings.Split(utils.GetEnv("KAFKA_BROKERS", "localhost:9092"), ",")
+	p, err := kafkabr.NewProducer(brokers)
 	if err != nil {
 		log.Fatalf("kafka producer: %v", err)
 	}
-	defer producer.Close()
+	defer p.Close()
+	producer = p
 
 	http.HandleFunc("/ws", wsHandler)
-	log.Println("gateway listening on :8081")
-	log.Fatal(http.ListenAndServe(":8081", nil))
+
+	port := utils.GetEnv("GATEWAY_PORT", "8081")
+	log.Printf("[gateway] listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
+// ---------- handlers ----------
+
 func wsHandler(w http.ResponseWriter, r *http.Request) {
-	tkn := r.URL.Query().Get("token")
-	claims, err := auth.ParseToken(tkn)
+	token := r.URL.Query().Get("token")
+	claims, err := auth.ParseToken(token)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

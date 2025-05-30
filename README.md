@@ -76,7 +76,9 @@ curl -X POST localhost:8080/login -d '{"username":"bobthebuilder","password":"ia
 
 ## TODO
 - error checks and validations
-- error responses
+- error responses (using a proper struct with fields like message:string, status_code:uint, success:bool)
 - test cases
 - code cleanup and refactor
 - logging in gateway/main.go, auth/main.go, persist/main.go 
+- private room between 2 users, maybe?
+- retreival of old chat, maybe?
