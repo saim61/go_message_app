@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
+FROM golang:1.23-alpine AS builder
 ARG SERVICE
-FROM golang:1.22-alpine AS builder
+ENV GOTOOLCHAIN=auto
+RUN echo "this is the service: $SERVICE" 
 
 WORKDIR /app
 COPY go.mod go.sum ./

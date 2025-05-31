@@ -22,6 +22,13 @@ func RegisterAuth(r *gin.RouterGroup, db *sqlx.DB) {
 	r.POST("/login", ar.login)
 }
 
+// RegisterHealth adds health check endpoint
+func RegisterHealth(r *gin.Engine) {
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "healthy"})
+	})
+}
+
 type loginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`

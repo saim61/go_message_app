@@ -23,6 +23,10 @@ func main() {
 
 	router := gin.Default()
 	router.Use(cors.Default())
+
+	// Add health check endpoint
+	routes.RegisterHealth(router)
+
 	api := router.Group("/api/v1")
 	routes.RegisterAuth(api, db)
 

@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: persist
+  namespace: go-message-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: persist }
+  template:
+    metadata:
+      labels: { app: persist }
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command: ['sh', '-c', 'until pg_isready -h db -p 5432; do echo waiting for database; sleep 2; done;']
+        - name: wait-for-kafka
+          image: apache/kafka:4.0.0
+          command: ['sh', '-c', 'until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092; do echo waiting for kafka; sleep 2; done;']
+      containers:
+        - name: persist
+          image: localhost:5000/go-message-app/persist:latest
+          imagePullPolicy: Never
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef:    { name: app-secret }

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: go-message-app
+data:
+  DB_HOST: "db"
+  DB_PORT: "5432"
+  DB_NAME: "go-message-app"
+  KAFKA_BROKERS: "kafka:9092"
+  AUTH_PORT: "8080"
+  GATEWAY_PORT: "8081"
+  KAFKA_CONSUMER_GROUP: "persist-svc"
+  KAFKA_DLQ_TOPIC: "chat-dlq"
+  DB_MAX_RETRIES: "3"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: go-message-app
+type: Opaque
+stringData:
+  DB_USER: "postgres"
+  DB_PASSWORD: "postgres"
+  # TODO
+  JWT_SECRET: "change-me-before-prod"

@@ -73,12 +73,60 @@ curl -X POST localhost:8080/register -d '{"username":"bobthebuilder","password":
 curl -X POST localhost:8080/login -d '{"username":"bobthebuilder","password":"iamabuilder"}' -H 'Content-Type: application/json'
 ```
 
+Docker build commands (run each command separately):
+```sh
+docker build --build-arg SERVICE=auth -t go-messge-app-auth:latest .
+docker build --build-arg SERVICE=gateway -t go-messge-app-gateway:latest .
+docker build --build-arg SERVICE=persist -t go-messge-app-persist:latest .
+```
+
+Kubectl apply commands (run each separately):
+```sh
+kubectl apply -f 30-auth.yaml
+kubectl apply -f 31-gateway.yaml
+kubectl apply -f 32-persist.yaml
+```
+
+Start a local registry:
+```sh
+docker run -d --restart=always -p 5000:5000 --name registry registry:2
+```
+
+### One-time local setup
+
+```bash
+# 1. start a tiny registry that the cluster can pull from
+docker run -d --restart=always -p 5000:5000 --name registry registry:2
+
+# 2. build + push images
+docker build --build-arg SERVICE=auth    -t host.docker.internal:5000/go-message-app/auth:latest    . && docker push host.docker.internal:5000/go-message-app/auth:latest
+docker build --build-arg SERVICE=gateway -t host.docker.internal:5000/go-message-app/gateway:latest . && docker push host.docker.internal:5000/go-message-app/gateway:latest
+docker build --build-arg SERVICE=persist -t host.docker.internal:5000/go-message-app/persist:latest . && docker push host.docker.internal:5000/go-message-app/persist:latest
+
+# 3. deploy to Docker-Desktop Kubernetes
+kubectl apply -f k8s/
+kubectl -n go-message-app get pods   # wait until all are Running
+```
+
+DELETE EVERYTHING
+```sh
+kubectl delete namespace go-message-app --wait=true 2>/dev/null || true
+docker rm -f registry 2>/dev/null || true
+docker image rm -f \
+  go-message-app-auth:latest \
+  go-message-app-gateway:latest \
+  go-message-app-persist:latest \
+  localhost:5000/go-message-app/auth:latest \
+  localhost:5000/go-message-app/gateway:latest \
+  localhost:5000/go-message-app/persist:latest 2>/dev/null || true \
+  host.docker.internal/go-message-app/auth:latest \
+  host.docker.internal/go-message-app/gateway:latest \
+  host.docker.internal/go-message-app/persist:latest 2>/dev/null || true
+  host.docker.internal:5000/go-message-app/auth:latest \
+  host.docker.internal:5000/go-message-app/gateway:latest \
+  host.docker.internal:5000/go-message-app/persist:latest 2>/dev/null || true
+```
 
 ## TODO
 - error checks and validations
-- error responses (using a proper struct with fields like message:string, status_code:uint, success:bool)
 - test cases
-- code cleanup and refactor
-- logging in gateway/main.go, auth/main.go, persist/main.go 
-- private room between 2 users, maybe?
-- retreival of old chat, maybe?
