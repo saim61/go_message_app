@@ -14,9 +14,9 @@ func NewMessageRepo(db *sqlx.DB) *MessageRepo { return &MessageRepo{db} }
 type Message struct {
 	ID        string `db:"id"`
 	Room      string `db:"room"`
-	Author    string // username
+	Author    string
 	Body      string `db:"body"`
-	CreatedAt string `db:"created_at"` // RFC3339 string from JSON
+	CreatedAt string `db:"created_at"`
 }
 
 func (r *MessageRepo) Save(ctx context.Context, m *Message) error {

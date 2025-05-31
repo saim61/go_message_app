@@ -1,19 +1,20 @@
 package auth
 
 import (
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtKey = []byte("REPLACE_ME_WITH_SECRET") // pull from env later
+var jwtKey = []byte(os.Getenv("JWT_SECRET"))
 
 type Claims struct {
 	Username string `json:"username"`
 	jwt.RegisteredClaims
 }
 
-// NewToken returns a signed HS256 JWT
+// NewToken returns a signed JWT
 func NewToken(username string, ttl time.Duration) (string, error) {
 	claims := &Claims{
 		Username: username,

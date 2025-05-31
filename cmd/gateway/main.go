@@ -51,8 +51,6 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-// ---------- handlers ----------
-
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	claims, err := auth.ParseToken(token)

@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/IBM/sarama"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -27,31 +31,77 @@ type wireMessage struct {
 func main() {
 	_ = godotenv.Load()
 
-	// ---------- DB ----------
-	dsn := utils.BuildDSN()
-	db, err := sqlx.Open("postgres", dsn)
+	groupID := utils.GetEnv("KAFKA_CONSUMER_GROUP", "persist-svc")
+	dlqTopic := utils.GetEnv("KAFKA_DLQ_TOPIC", "chat-dlq")
+	brokers := strings.Split(utils.GetEnv("KAFKA_BROKERS", "localhost:9092"), ",")
+	retryN, _ := strconv.Atoi(utils.GetEnv("DB_MAX_RETRIES", "3"))
+
+	db, err := sqlx.Open("postgres", utils.BuildDSN())
 	if err != nil {
-		log.Fatal(err)
-	}
-	if err = db.Ping(); err != nil {
 		log.Fatal(err)
 	}
 	msgRepo := postgres.NewMessageRepo(db)
 
-	// ---------- Kafka ----------
-	brokers := strings.Split(utils.GetEnv("KAFKA_BROKERS", "localhost:9092"), ",")
-	consumer, err := kafkabr.NewConsumer(brokers)
+	dlqProducer, err := kafkabr.NewProducer(brokers)
 	if err != nil {
-		log.Fatalf("kafka consumer: %v", err)
+		log.Fatal(err)
+	}
+	defer dlqProducer.Close()
+
+	consumer, err := kafkabr.NewGroupConsumer(brokers, groupID)
+	if err != nil {
+		log.Fatal(err)
 	}
 	defer consumer.Close()
 
-	handler := func(_ []byte, val []byte) error {
-		var wm wireMessage
-		if json.Unmarshal(val, &wm) != nil {
-			return nil
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		for e := range consumer.Errors() {
+			log.Printf("[persist] consumer error: %v", e)
 		}
-		return msgRepo.Save(context.Background(), &postgres.Message{
+	}()
+
+	handler := &persistHandler{
+		repo:       msgRepo,
+		dlq:        dlqProducer,
+		dlqTopic:   dlqTopic,
+		maxRetries: retryN,
+	}
+	if err := consumer.Consume(ctx, []string{"chat-in"}, handler); err != nil {
+		log.Fatal(err)
+	}
+}
+
+type persistHandler struct {
+	repo       *postgres.MessageRepo
+	dlq        *kafkabr.SaramaProducer
+	dlqTopic   string
+	maxRetries int
+}
+
+func (h *persistHandler) Setup(sarama.ConsumerGroupSession) error   { return nil }
+func (h *persistHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
+
+func (h *persistHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	for msg := range claim.Messages() {
+		if err := h.handle(msg); err != nil {
+			log.Printf("[persist] DLQ push for offset %d: %v", msg.Offset, err)
+			_ = h.dlq.Produce(h.dlqTopic, msg.Key, msg.Value)
+		}
+		sess.MarkMessage(msg, "")
+	}
+	return nil
+}
+
+func (h *persistHandler) handle(m *sarama.ConsumerMessage) error {
+	var wm wireMessage
+	if json.Unmarshal(m.Value, &wm) != nil {
+		return fmt.Errorf("json decode: %w", errBadPayload)
+	}
+	op := func() error {
+		return h.repo.Save(context.Background(), &postgres.Message{
 			ID:        wm.ID,
 			Room:      wm.Room,
 			Author:    wm.Author,
@@ -59,9 +109,14 @@ func main() {
 			CreatedAt: wm.CreatedAt.Format(time.RFC3339),
 		})
 	}
+	return retry(op, h.maxRetries)
+}
 
-	if err = consumer.Consume("chat-in", handler); err != nil {
-		log.Fatal(err)
-	}
-	select {}
+var errBadPayload = fmt.Errorf("bad payload")
+
+func retry(f func() error, max int) error {
+	bo := backoff.WithMaxRetries(backoff.NewExponentialBackOff(), uint64(max))
+	return backoff.RetryNotify(f, bo, func(err error, t time.Duration) {
+		log.Printf("[persist] retry in %s: %v", t, err)
+	})
 }
