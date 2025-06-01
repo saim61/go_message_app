@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/IBM/sarama"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
@@ -20,6 +23,7 @@ type inbound struct {
 	Room string `json:"room"`
 	Body string `json:"body"`
 }
+
 type wireMessage struct {
 	ID        string    `json:"id"`
 	Room      string    `json:"room"`
@@ -28,21 +32,166 @@ type wireMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Client struct {
+	ID       string
+	Username string
+	Room     string
+	Conn     *websocket.Conn
+	Send     chan wireMessage
+}
+
+type Hub struct {
+	clients    map[string]*Client
+	rooms      map[string]map[string]*Client // room -> clientID -> client
+	register   chan *Client
+	unregister chan *Client
+	broadcast  chan wireMessage
+	mutex      sync.RWMutex
+}
+
+func newHub() *Hub {
+	return &Hub{
+		clients:    make(map[string]*Client),
+		rooms:      make(map[string]map[string]*Client),
+		register:   make(chan *Client),
+		unregister: make(chan *Client),
+		broadcast:  make(chan wireMessage),
+	}
+}
+
+func (h *Hub) run() {
+	for {
+		select {
+		case client := <-h.register:
+			h.mutex.Lock()
+			h.clients[client.ID] = client
+			if h.rooms[client.Room] == nil {
+				h.rooms[client.Room] = make(map[string]*Client)
+			}
+			h.rooms[client.Room][client.ID] = client
+			h.mutex.Unlock()
+
+			log.Printf("[gateway] User %s joined room %s", client.Username, client.Room)
+
+			// Send join notification
+			joinMsg := wireMessage{
+				ID:        uuid.NewString(),
+				Room:      client.Room,
+				Author:    "System",
+				Body:      client.Username + " joined the room",
+				CreatedAt: time.Now().UTC(),
+			}
+			h.broadcastToRoom(client.Room, joinMsg)
+
+		case client := <-h.unregister:
+			h.mutex.Lock()
+			if _, ok := h.clients[client.ID]; ok {
+				delete(h.clients, client.ID)
+				if roomClients, exists := h.rooms[client.Room]; exists {
+					delete(roomClients, client.ID)
+					if len(roomClients) == 0 {
+						delete(h.rooms, client.Room)
+					}
+				}
+				close(client.Send)
+			}
+			h.mutex.Unlock()
+
+			log.Printf("[gateway] User %s left room %s", client.Username, client.Room)
+
+			// Send leave notification
+			leaveMsg := wireMessage{
+				ID:        uuid.NewString(),
+				Room:      client.Room,
+				Author:    "System",
+				Body:      client.Username + " left the room",
+				CreatedAt: time.Now().UTC(),
+			}
+			h.broadcastToRoom(client.Room, leaveMsg)
+
+		case message := <-h.broadcast:
+			h.broadcastToRoom(message.Room, message)
+		}
+	}
+}
+
+func (h *Hub) broadcastToRoom(room string, message wireMessage) {
+	h.mutex.RLock()
+	roomClients := h.rooms[room]
+	h.mutex.RUnlock()
+
+	for _, client := range roomClients {
+		select {
+		case client.Send <- message:
+		default:
+			close(client.Send)
+			h.mutex.Lock()
+			delete(h.clients, client.ID)
+			delete(h.rooms[room], client.ID)
+			h.mutex.Unlock()
+		}
+	}
+}
+
+func (h *Hub) getRoomUserCount(room string) int {
+	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+	if roomClients, exists := h.rooms[room]; exists {
+		return len(roomClients)
+	}
+	return 0
+}
+
 var (
 	producer *kafkabr.SaramaProducer
+	consumer sarama.Consumer
+	hub      *Hub
 	upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 )
+
+// ipv4Dialer forces IPv4 connections
+func ipv4Dialer(network, address string) (net.Conn, error) {
+	d := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+	return d.Dial("tcp4", address)
+}
 
 func main() {
 	_ = godotenv.Load()
 
 	brokers := strings.Split(utils.GetEnv("KAFKA_BROKERS", "localhost:9092"), ",")
+	log.Printf("[gateway] Connecting to Kafka brokers: %v", brokers)
+
+	// Initialize producer
 	p, err := kafkabr.NewProducer(brokers)
 	if err != nil {
 		log.Fatalf("kafka producer: %v", err)
 	}
 	defer p.Close()
 	producer = p
+
+	// Initialize consumer
+	config := sarama.NewConfig()
+	config.Consumer.Return.Errors = true
+	config.Net.DialTimeout = 10 * time.Second
+	config.Net.ReadTimeout = 10 * time.Second
+	config.Net.WriteTimeout = 10 * time.Second
+
+	c, err := sarama.NewConsumer(brokers, config)
+	if err != nil {
+		log.Printf("[gateway] Failed to create Kafka consumer: %v", err)
+		log.Printf("[gateway] Continuing without Kafka consumer - messages won't be broadcasted")
+	} else {
+		defer c.Close()
+		consumer = c
+		// Start consuming messages from Kafka
+		go consumeMessages()
+	}
+
+	// Initialize hub
+	hub = newHub()
+	go hub.run()
 
 	http.HandleFunc("/ws", wsHandler)
 	http.HandleFunc("/health", healthHandler)
@@ -51,6 +200,42 @@ func main() {
 	port := utils.GetEnv("GATEWAY_PORT", "8081")
 	log.Printf("[gateway] listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+func consumeMessages() {
+	if consumer == nil {
+		log.Printf("[gateway] Consumer is nil, skipping message consumption")
+		return
+	}
+
+	partitions, err := consumer.Partitions("chat-in")
+	if err != nil {
+		log.Printf("[gateway] Error getting partitions: %v", err)
+		return
+	}
+
+	for _, partition := range partitions {
+		pc, err := consumer.ConsumePartition("chat-in", partition, sarama.OffsetNewest)
+		if err != nil {
+			log.Printf("[gateway] Error creating partition consumer: %v", err)
+			continue
+		}
+
+		go func(pc sarama.PartitionConsumer) {
+			defer pc.Close()
+			for {
+				select {
+				case msg := <-pc.Messages():
+					var wireMsg wireMessage
+					if err := json.Unmarshal(msg.Value, &wireMsg); err == nil {
+						hub.broadcast <- wireMsg
+					}
+				case err := <-pc.Errors():
+					log.Printf("[gateway] Consumer error: %v", err)
+				}
+			}
+		}(pc)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +346,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
             border-left-color: #28a745;
             background-color: #f8fff9;
         }
-        .message.sent {
+        .message.own {
             border-left-color: #ffc107;
             background-color: #fffdf5;
         }
@@ -217,6 +402,8 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
             border-radius: 20px;
             font-size: 12px;
             font-weight: 600;
+            min-width: 60px;
+            text-align: center;
         }
     </style>
 </head>
@@ -276,6 +463,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
         let ws = null;
         let connected = false;
         let currentUser = '';
+        let currentRoom = '';
 
         function updateStatus(status, isConnected) {
             const statusEl = document.getElementById('status');
@@ -289,22 +477,44 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
             document.getElementById('sendBtn').disabled = !isConnected;
         }
 
+        function updateUserCount() {
+            // This will be updated when we receive room info from server
+            // For now, we'll simulate it
+            const userCountEl = document.getElementById('userCount');
+            if (connected) {
+                // In a real implementation, the server would send user count updates
+                userCountEl.textContent = '1+ users';
+            } else {
+                userCountEl.textContent = '0 users';
+            }
+        }
+
         function addMessage(message, type = 'normal') {
             const messagesEl = document.getElementById('messages');
             const messageEl = document.createElement('div');
-            messageEl.className = 'message ' + type;
+            let messageClass = 'message';
             
             if (typeof message === 'string') {
+                messageClass += ' system';
                 messageEl.innerHTML = '<strong>System:</strong> ' + message;
             } else {
                 const timestamp = new Date(message.created_at).toLocaleTimeString();
                 const isOwnMessage = message.author === currentUser;
+                const isSystemMessage = message.author === 'System';
+                
+                if (isOwnMessage) {
+                    messageClass += ' own';
+                } else if (isSystemMessage) {
+                    messageClass += ' system';
+                }
+                
                 messageEl.innerHTML = 
                     '<strong>' + message.author + (isOwnMessage ? ' (You)' : '') + '</strong> ' +
                     '<span style="color: #666; font-size: 12px;">[' + message.room + '] ' + timestamp + '</span><br>' +
                     '<div style="margin-top: 5px;">' + message.body + '</div>';
             }
             
+            messageEl.className = messageClass;
             messagesEl.appendChild(messageEl);
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
@@ -367,19 +577,28 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
         function connect() {
             const token = document.getElementById('token').value.trim();
+            const room = document.getElementById('room').value.trim();
+            
             if (!token) {
                 alert('Please login first or enter a JWT token');
                 return;
             }
+            
+            if (!room) {
+                alert('Please enter a room name');
+                return;
+            }
 
+            currentRoom = room;
             updateStatus('Connecting...', false);
             addMessage('Attempting to connect to WebSocket...', 'system');
 
-            const wsUrl = 'ws://localhost:8081/ws?token=' + encodeURIComponent(token);
+            const wsUrl = 'ws://localhost:8081/ws?token=' + encodeURIComponent(token) + '&room=' + encodeURIComponent(room);
             ws = new WebSocket(wsUrl);
 
             ws.onopen = function(event) {
                 updateStatus('Connected to real-time chat!', true);
+                updateUserCount();
                 addMessage('✅ Connected to WebSocket! You can now send messages.', 'system');
             };
 
@@ -394,6 +613,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
             ws.onclose = function(event) {
                 updateStatus('Disconnected', false);
+                updateUserCount();
                 addMessage('❌ Connection closed. Code: ' + event.code + ', Reason: ' + event.reason, 'system');
             };
 
@@ -431,7 +651,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
             ws.send(JSON.stringify(message));
             document.getElementById('messageInput').value = '';
-            addMessage('📤 Sent: ' + body + ' (to room: ' + room + ')', 'sent');
         }
 
         // Allow Enter key to send message
@@ -459,34 +678,113 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
+	room := r.URL.Query().Get("room")
+
+	if room == "" {
+		room = "general" // default room
+	}
+
 	claims, err := auth.ParseToken(token)
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+
+	client := &Client{
+		ID:       uuid.NewString(),
+		Username: claims.Username,
+		Room:     room,
+		Conn:     conn,
+		Send:     make(chan wireMessage, 256),
+	}
+
+	hub.register <- client
+
+	// Start goroutines for reading and writing
+	go client.writePump()
+	go client.readPump()
+}
+
+func (c *Client) readPump() {
+	defer func() {
+		hub.unregister <- c
+		c.Conn.Close()
+	}()
+
+	c.Conn.SetReadLimit(512)
+	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.Conn.SetPongHandler(func(string) error {
+		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
 
 	for {
-		_, raw, err := conn.ReadMessage()
+		_, raw, err := c.Conn.ReadMessage()
 		if err != nil {
-			return
+			break
 		}
+
 		var in inbound
 		if json.Unmarshal(raw, &in) != nil || in.Room == "" || in.Body == "" {
 			continue
 		}
+
+		// Update client room if changed
+		if in.Room != c.Room {
+			// Remove from old room
+			hub.unregister <- c
+			// Update room and re-register
+			c.Room = in.Room
+			hub.register <- c
+		}
+
 		msg := wireMessage{
 			ID:        uuid.NewString(),
 			Room:      in.Room,
-			Author:    claims.Username,
+			Author:    c.Username,
 			Body:      in.Body,
 			CreatedAt: time.Now().UTC(),
 		}
+
+		// Send to Kafka for persistence
 		payload, _ := json.Marshal(msg)
 		_ = producer.Produce("chat-in", []byte(in.Room), payload)
+
+		// Broadcast immediately to connected clients
+		hub.broadcast <- msg
+	}
+}
+
+func (c *Client) writePump() {
+	ticker := time.NewTicker(54 * time.Second)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+
+	for {
+		select {
+		case message, ok := <-c.Send:
+			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if !ok {
+				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			if err := c.Conn.WriteJSON(message); err != nil {
+				return
+			}
+
+		case <-ticker.C:
+			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
 	}
 }
