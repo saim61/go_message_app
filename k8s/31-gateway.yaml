@@ -20,7 +20,7 @@ spec:
           command: ['sh', '-c', 'until curl -f http://auth:8080/health; do echo waiting for auth service; sleep 2; done;']
       containers:
         - name: gateway
-          image: localhost:5000/go-message-app/gateway:latest
+          image: go-message-app-gateway:latest
           imagePullPolicy: Never
           envFrom:
             - configMapRef: { name: app-config }

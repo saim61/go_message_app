@@ -17,7 +17,7 @@ spec:
           command: ['sh', '-c', 'until pg_isready -h db -p 5432; do echo waiting for database; sleep 2; done;']
       containers:
         - name: auth
-          image: localhost:5000/go-message-app/auth:latest
+          image: go-message-app-auth:latest
           imagePullPolicy: Never
           envFrom:
             - configMapRef: { name: app-config }

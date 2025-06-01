@@ -23,5 +23,4 @@ type: Opaque
 stringData:
   DB_USER: "postgres"
   DB_PASSWORD: "postgres"
-  # TODO
-  JWT_SECRET: "change-me-before-prod"
+  JWT_SECRET: "x78eskra5b"

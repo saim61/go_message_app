@@ -20,7 +20,7 @@ spec:
           command: ['sh', '-c', 'until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092; do echo waiting for kafka; sleep 2; done;']
       containers:
         - name: persist
-          image: localhost:5000/go-message-app/persist:latest
+          image: go-message-app-persist:latest
           imagePullPolicy: Never
           envFrom:
             - configMapRef: { name: app-config }
