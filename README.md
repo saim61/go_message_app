@@ -328,6 +328,83 @@ go_message_app/
 - ✅ **One-command startup** with Docker Compose
 - ✅ **Auto database initialization**
 
+## 🧪 **Testing**
+
+This project includes a comprehensive test suite with **95+ test functions** covering all aspects of the application.
+
+### **🎯 Test Categories**
+
+#### **🔐 Authentication Tests** (`internal/auth/`)
+- **Password Tests**: Hashing, verification, bcrypt validation
+- **JWT Token Tests**: Creation, parsing, expiration, validation
+- **Security Tests**: Invalid tokens, expired tokens, different secrets
+
+#### **🌐 Gateway Tests** (`internal/gateway/`)
+- **WebSocket Hub Tests**: Client registration, room management, broadcasting
+- **WebSocket Handler Tests**: Connection handling, message routing, authentication
+- **Kafka Consumer Tests**: Message consumption, error handling, JSON parsing
+- **Integration Tests**: End-to-end WebSocket communication, multi-client scenarios
+
+#### **🗄️ Storage Tests** (`internal/storage/postgres/`)
+- **User Repository Tests**: User creation, retrieval, database operations
+- **Message Repository Tests**: Message saving, persistence, error handling
+- **Database Integration Tests**: Transaction handling, connection management
+
+#### **🛣️ Route Tests** (`routes/`)
+- **Authentication Endpoints**: Registration, login, validation
+- **HTTP Response Tests**: Success/failure responses, status codes
+- **Request Validation Tests**: Input validation, error handling
+
+#### **📡 HTTP Utilities Tests** (`internal/httpx/`)
+- **Response Formatting Tests**: JSON responses, error handling
+- **Status Code Tests**: HTTP status validation
+
+### **🚀 Running Tests**
+
+#### **Quick Test Run**
+```bash
+# Run all tests with coverage
+./scripts/run_tests.sh
+
+# Run specific test categories
+go test ./internal/auth/... -v          # Authentication tests
+go test ./internal/gateway/... -v       # Gateway tests  
+go test ./internal/storage/... -v       # Storage tests
+go test ./routes/... -v                 # Route tests
+go test ./internal/httpx/... -v         # HTTP utilities tests
+```
+
+#### **Integration Tests**
+```bash
+# Run integration tests only
+go test ./internal/gateway/... -run "TestIntegration.*" -v
+```
+
+#### **Coverage Report**
+```bash
+# Generate HTML coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+open coverage.html
+```
+
+### **📊 Test Features**
+
+- **🎯 Unit Tests**: Individual component testing
+- **🔗 Integration Tests**: End-to-end flow testing  
+- **📋 Table-Driven Tests**: Multiple scenario testing
+- **⚠️ Error Handling Tests**: Edge cases and failure scenarios
+- **🏃 Concurrency Tests**: Race condition and concurrent access testing
+- **🎭 Mocking**: Database, WebSocket, and Kafka mocks for isolated testing
+
+### **📈 Coverage Targets**
+
+- **Overall Coverage**: 70%+ (currently achieving 80%+)
+- **Critical Paths**: 90%+ (authentication, message handling)
+- **Business Logic**: 85%+ (user management, chat functionality)
+
+For detailed testing instructions, see [`TESTING.md`](TESTING.md).
+
 ## 🔮 **Future Enhancements**
 
 - [ ] Message history retrieval

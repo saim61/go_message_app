@@ -14,6 +14,11 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
+// SetJWTSecret sets the JWT secret key (primarily for testing)
+func SetJWTSecret(secret string) {
+	jwtKey = []byte(secret)
+}
+
 // NewToken returns a signed JWT
 func NewToken(username string, ttl time.Duration) (string, error) {
 	claims := &Claims{
