@@ -60,7 +60,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - DB_NAME=go_message_app
-      - JWT_SECRET=your-secret-key
+      - JWT_SECRET=x78eskra5b
     depends_on:
       db:
         condition: service_healthy
@@ -76,6 +76,7 @@ services:
     environment:
       - AUTH_SERVICE_URL=http://auth:8080
       - KAFKA_BROKERS=kafka:9092
+      - JWT_SECRET=x78eskra5b
     depends_on:
       - auth
       - kafka
